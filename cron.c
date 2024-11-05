@@ -56,7 +56,6 @@ int	parser(void);
 static void
 usage(void)
 {
-
 	fprintf(stderr, "usage: %s [-dnv] [-l load_avg]\n", __progname);
 	exit(EXIT_FAILURE);
 }
@@ -118,7 +117,6 @@ main(int argc, char *argv[])
 			if (daemon(0, 0) == -1)
 				fatal("failed to daemonize");
 
-		/* setup all processes */
 		p_planner = start_child(save_argc, save_argv, "planner");
 		p_planner->proc = PROC_PLANNER;
 
