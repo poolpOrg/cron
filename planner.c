@@ -43,8 +43,9 @@
 static struct dict	tabs_cache;
 static struct dict	tabs;
 
-
 static struct event	ev;
+
+static struct runq	*runq;
 
 static struct tab *planning_parse_user_tab(FILE *, char *);
 static void	planner_process_tab(char *);
@@ -52,6 +53,10 @@ static void	planner_walk(void);
 static void	planner_reset_events(void);
 static void	planner_timeout(int, short, void *);
 static void	planner_shutdown(void);
+
+static time_t	next_schedule(time_t, struct task *);
+static void	schedule_tab(struct tab *);
+static void	task_execute_callback(struct runq *, void *);
 
 void
 planner_imsg(struct mproc *p, struct imsg *imsg)
@@ -94,10 +99,13 @@ planner(void)
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
-		fatal("planner: cannot drop privileges");
+ 		fatal("planner: cannot drop privileges");
 
 	imsg_callback = planner_imsg;
 	event_init();
+
+	if (!runq_init(&runq, task_execute_callback))
+		fatal("planner: runq_init");
 
 	signal(SIGINT, SIG_IGN);
 	signal(SIGTERM, SIG_IGN);
@@ -191,7 +199,7 @@ planner_process_tab(char *pathname)
 	FILE *fp;
 	struct stat	sb;
 	struct tab_cache *cc;
-	struct tab	*c, *old;
+	struct tab	*tabp, *old;
 	
 	if (stat(pathname, &sb) == -1) {
 		log_warn("stat");
@@ -208,18 +216,21 @@ planner_process_tab(char *pathname)
 		goto err;
 
 
-	c = planning_parse_user_tab(fp, pathname);
-	if (c == NULL) {
+	tabp = planning_parse_user_tab(fp, pathname);
+	if (tabp == NULL) {
 		log_warn("could not parse %s", pathname);
 	} else {
 		old = dict_get(&tabs, pathname);
-		dict_set(&tabs, pathname, c);
+		dict_set(&tabs, pathname, tabp);
 		if (old != NULL) {
 			tab_cleanup(old);
 			free(old);
 		}
 	}
 	fclose(fp);
+
+	schedule_tab(tabp);
+
 
 	if (cc == NULL) {
 		if ((cc = calloc(1, sizeof *cc)) == NULL) {
@@ -376,7 +387,8 @@ parse_time_field_atom(char *input, struct time_field_atom *tfa, enum time_field_
 	default:
 		fatalx("unexpected time field atom type: %d", type);
 	}
-	
+
+	tfa->step = 1;
 	if ((stepstr = strchr(input, '/')) != NULL) {
 		*stepstr++ = '\0';
 	}
@@ -515,7 +527,6 @@ parse_user_tab_task_entry(struct tab *tabp, char *line)
 {
 	struct task	*taskp;
 	uint32_t	taskid;
-	char		*p;
 	char		*minute;
 	char		*hour;
 	char		*day_of_month;
@@ -555,32 +566,31 @@ parse_user_tab_task_entry(struct tab *tabp, char *line)
 	task_init(taskp);
 
 	/* check optional flags*/
-	if (*p == '-') {
-		if (*(p+1) == '\0')
+	if (*line == '-') {
+		if (*(line+1) == '\0')
 			return 0;
-		for (; *p != '\0' && !isspace(*p); p++) {
-			if (*p == 'n')
+		for (; *line != '\0' && !isspace(*line); line++) {
+			if (*line == 'n')
 				taskp->n_flag = 1;
-			else if (*p == 'q')
+			else if (*line == 'q')
 				taskp->q_flag = 1;
-			else if (*p == 's')
+			else if (*line == 's')
 				taskp->s_flag = 1;
 			else
 				return 0;
 		}
-		if (*p == '\0')
+		if (*line == '\0')
 			return 0;
-		if (*p) {
-			*p++ = '\0';
-			for (; *p != '\0' && isspace(*p); p++)
-				*p = '\0';
+		if (*line) {
+			*line++ = '\0';
+			for (; *line != '\0' && isspace(*line); line++)
+				*line = '\0';
 		}
 	}
 
-	if ((taskp->command = strdup(p)) == NULL)
+	if ((taskp->command = strdup(line)) == NULL)
 		goto err;
-	
-	
+
 	if (!expand_task_scheds(taskp, minute, hour, day_of_month, month, day_of_week))
 		goto err;
 
@@ -630,4 +640,112 @@ err:
 	tab_cleanup(tab);
 	free(tab);
 	return NULL;
+}
+
+static int
+match_time_field(struct time_field_head *head, int value)
+{
+	struct time_field_atom *atom;
+	uint8_t v;
+
+	SLIST_FOREACH(atom, head, entries) {
+		for (v = atom->minval; v <= atom->maxval; v += atom->step)
+			if (v == value)
+				return 1;
+	}
+	return 0;
+}
+
+static time_t
+next_schedule(time_t now, struct task *taskp)
+{
+	struct tm	*next;
+
+	next = localtime(&now);
+	next->tm_sec = 0;
+	next->tm_min++;
+	if (next->tm_min >= 60) {
+		next->tm_min = 0;
+		next->tm_hour++;
+	}
+	if (next->tm_hour >= 24) {
+		next->tm_hour = 0;
+		next->tm_mday++;
+	}
+	
+	/* normalize month and day */
+	mktime(next);
+
+	while (1) {
+		if (match_time_field(&taskp->minutes, next->tm_min) &&
+		    match_time_field(&taskp->hours, next->tm_hour) &&
+		    match_time_field(&taskp->days_of_month, next->tm_mday) &&
+		    match_time_field(&taskp->months, next->tm_mon+1) &&
+		    match_time_field(&taskp->days_of_week, next->tm_wday))
+			return mktime(next);
+
+		/* increase by a minute */
+		next->tm_min++;
+		if (next->tm_min >= 60) {
+			next->tm_min = 0;
+			next->tm_hour++;
+		}
+		if (next->tm_hour >= 24) {
+			next->tm_hour = 0;
+			next->tm_mday++;
+		}
+
+		/* normalize month and day */
+		mktime(next);
+	}
+}
+
+static void
+schedule_tab(struct tab *tabp)
+{
+	void		*iter;
+	uint64_t	task_id;
+	struct task	*taskp;
+	time_t		now, next;
+
+	struct tm	*ti;
+	char		buffer[80];
+
+	
+	iter = NULL;
+	while (tree_iter(&tabp->tasks, &iter, (uint64_t *)&task_id, (void **)&taskp)) {
+		now = time(NULL);
+		next = next_schedule(now, taskp);
+		ti = localtime(&next);
+		strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H:%M", ti);
+		log_info("[%08x%08x] next: %s, command: %s",
+		    tabp->id, (uint32_t)task_id, buffer, taskp->command);
+
+		// Schedule the task in the run queue
+		if (!runq_schedule_at(runq, next, (void *)taskp)) {
+			log_warn("Failed to schedule task %s", taskp->command);
+		}
+	}
+
+}
+
+static void
+task_execute_callback(struct runq *rq, void *arg)
+{
+	struct task *taskp = (struct task *)arg;
+	time_t		now, next;
+	struct tm	*ti;
+	char		buffer[80];
+
+	now = time(NULL);
+	next = next_schedule(now, taskp);
+	ti = localtime(&next);
+	strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H:%M", ti);
+	
+	log_info("executing command: %s, next: %s",
+	    taskp->command, buffer);
+
+	if (!runq_schedule_at(runq, next, (void *)taskp)) {
+		log_warn("Failed to schedule task %s", taskp->command);
+	}
 }
