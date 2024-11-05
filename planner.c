@@ -27,6 +27,7 @@
 #include <event.h>
 #include <fts.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
@@ -43,12 +44,14 @@
 static struct dict	tabs_cache;
 static struct dict	tabs;
 
+static struct tree	tasks;
+
 static struct event	ev;
 
 static struct runq	*runq;
 
-static struct tab *planning_parse_user_tab(FILE *, char *);
-static void	planner_process_tab(char *);
+static struct tab *planning_parse_user_tab(char *, char *, uid_t);
+static void	planner_process_user_tab(char *, char *, uid_t);
 static void	planner_walk(void);
 static void	planner_reset_events(void);
 static void	planner_timeout(int, short, void *);
@@ -56,7 +59,9 @@ static void	planner_shutdown(void);
 
 static time_t	next_schedule(time_t, struct task *);
 static void	schedule_tab(struct tab *);
+static void	unschedule_tab(struct tab *);
 static void	task_execute_callback(struct runq *, void *);
+
 
 void
 planner_imsg(struct mproc *p, struct imsg *imsg)
@@ -96,10 +101,10 @@ planner(void)
 	if (chdir("/") == -1)
 		fatal("planner: chdir(\"/\")");
 
-	if (setgroups(1, &pw->pw_gid) ||
-	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
- 		fatal("planner: cannot drop privileges");
+//	if (setgroups(1, &pw->pw_gid) ||
+//	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+//	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+//		fatal("planner: cannot drop privileges");
 
 	imsg_callback = planner_imsg;
 	event_init();
@@ -122,6 +127,7 @@ planner(void)
 
 	dict_init(&tabs_cache);
 	dict_init(&tabs);
+	tree_init(&tasks);
  
 	event_dispatch();
 	fatalx("exited event loop");
@@ -182,7 +188,7 @@ planner_walk()
 				/* skip tab */
 				continue;
 			}
-			planner_process_tab(fts->fts_path);
+			planner_process_user_tab(fts->fts_path, ftse->fts_name, ftse->fts_statp->st_uid);
 			break;
 		default:
 			break;
@@ -194,60 +200,45 @@ planner_walk()
 }
 
 static void
-planner_process_tab(char *pathname)
+planner_process_user_tab(char *filename, char *username, uid_t uid)
 {
-	FILE *fp;
 	struct stat	sb;
 	struct tab_cache *cc;
 	struct tab	*tabp, *old;
 	
-	if (stat(pathname, &sb) == -1) {
+	if (stat(filename, &sb) == -1) {
 		log_warn("stat");
 		return;
 	}
 
-	cc = dict_get(&tabs_cache, pathname);
+	cc = dict_get(&tabs_cache, filename);
 	if (cc != NULL && cc->size == sb.st_size && cc->mtime == sb.st_mtime) {
 		return;
 	}
 	
-	fp = fopen(pathname, "r");
-	if (fp == NULL)
-		goto err;
-
-
-	tabp = planning_parse_user_tab(fp, pathname);
+	tabp = planning_parse_user_tab(filename, username, uid);
 	if (tabp == NULL) {
-		log_warn("could not parse %s", pathname);
+		log_warn("could not parse %s", filename);
 	} else {
-		old = dict_get(&tabs, pathname);
-		dict_set(&tabs, pathname, tabp);
+		old = dict_get(&tabs, filename);
+		dict_set(&tabs, filename, tabp);
 		if (old != NULL) {
+			unschedule_tab(old);
 			tab_cleanup(old);
 			free(old);
 		}
 	}
-	fclose(fp);
 
 	schedule_tab(tabp);
 
 
-	if (cc == NULL) {
-		if ((cc = calloc(1, sizeof *cc)) == NULL) {
-			log_warn("calloc");
-			goto err;
-		}
-	}
+	if (cc == NULL)
+		if ((cc = calloc(1, sizeof *cc)) == NULL)
+			fatal("calloc");
+
 	cc->size = sb.st_size;
 	cc->mtime = sb.st_mtime;
-	dict_set(&tabs_cache, pathname, cc);
-
-	return;
-
-err:
-	if (fp != NULL)
-		fclose(fp);
-	return;
+	dict_set(&tabs_cache, filename, cc);
 }
 
 static int
@@ -290,7 +281,7 @@ err:
 }
 
 static int
-parse_user_tab_shortcut_task_entry(struct tab *c, char *line)
+parse_user_tab_shortcut_task_entry(struct tab *c, char *username, uid_t uid, char *line)
 {
 	struct task	t;
 	struct task	*tp;
@@ -523,10 +514,10 @@ expand_task_scheds(struct task *t, char *minute, char *hour, char *day_of_month,
 }
 
 static int
-parse_user_tab_task_entry(struct tab *tabp, char *line)
+parse_user_tab_task_entry(struct tab *tabp, char *username, uid_t uid, char *line)
 {
 	struct task	*taskp;
-	uint32_t	taskid;
+	uint64_t	taskid;
 	char		*minute;
 	char		*hour;
 	char		*day_of_month;
@@ -535,7 +526,7 @@ parse_user_tab_task_entry(struct tab *tabp, char *line)
 
 
 	if (*line == '@')
-		return parse_user_tab_shortcut_task_entry(tabp, line);
+		return parse_user_tab_shortcut_task_entry(tabp, username, uid, line);
 
 	minute = strsep(&line, " \t");
 	for (; *line != '\0' && isspace(*line); line++)
@@ -591,13 +582,20 @@ parse_user_tab_task_entry(struct tab *tabp, char *line)
 	if ((taskp->command = strdup(line)) == NULL)
 		goto err;
 
+	if ((taskp->username = strdup(username)) == NULL)
+		goto err;
+	taskp->uid = uid;
+
 	if (!expand_task_scheds(taskp, minute, hour, day_of_month, month, day_of_week))
 		goto err;
 
+	taskid = (uint64_t)tabp->id<<32;
 	do {
-		taskid = arc4random();
-	} while (tree_check(&tabp->tasks, (uint64_t)taskid));
-	tree_set(&tabp->tasks, (uint64_t)taskid, taskp);
+		taskid = (taskid & 0xffffffff00000000) | arc4random();
+	} while (tree_check(&tasks, taskid));
+	taskp->id = taskid;
+	tree_set(&tasks, taskid, taskp);
+	tree_set(&tabp->tasks, taskid, taskp);
 	
 	return 1;
 
@@ -608,17 +606,22 @@ err:
 }
 
 static struct tab *
-planning_parse_user_tab(FILE *fp, char *filename)
+planning_parse_user_tab(char *filename, char *username, uid_t uid)
 {
+	FILE *fp;
 	struct tab *tab;
 	char *line, *p;
 	size_t len, lineno = 0;
 	char delim[3] = { '\\', '\\', '#' };
 
-	if ((tab = calloc(1, sizeof *tab)) == NULL)
+	fp = fopen(filename, "r");
+	if (fp == NULL)
 		return NULL;
-	tab_init(tab);
+	
+	if ((tab = calloc(1, sizeof *tab)) == NULL)
+		goto err;
 
+	tab_init(tab);
 	while ((line = fparseln(fp, &len, &lineno, delim, 0)) != NULL) {
 		for (p = line; *p != '\0' && isspace(*p); p++)
 			;
@@ -627,18 +630,23 @@ planning_parse_user_tab(FILE *fp, char *filename)
 				if (!parse_env_entry(tab, p))
 					goto err;
 			} else {
-				if (!parse_user_tab_task_entry(tab, p))
+				if (!parse_user_tab_task_entry(tab, username, uid, p))
 					goto err;
 			}
 		}
 		free(line);
 	}
 
+	fclose(fp);
+	
 	return tab;
 
 err:
 	tab_cleanup(tab);
 	free(tab);
+	if (fp != NULL)
+		fclose(fp);
+
 	return NULL;
 }
 
@@ -704,6 +712,34 @@ static void
 schedule_tab(struct tab *tabp)
 {
 	void		*iter;
+	struct task	*taskp;
+	time_t		now, next;
+
+	struct tm	*ti;
+	char		buffer[80];
+
+	
+	iter = NULL;
+	while (tree_iter(&tabp->tasks, &iter, NULL, (void **)&taskp)) {
+		now = time(NULL);
+		next = next_schedule(now, taskp);
+		ti = localtime(&next);
+		strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H:%M", ti);
+
+		log_info("[%016" PRIx64 "] scheduling task at %s for command [%s] as user %s (uid=%d)",
+		    taskp->id, buffer, taskp->command, taskp->username, taskp->uid);
+
+		if (!runq_schedule_at(runq, next, (void *)taskp)) {
+			log_warn("[%016" PRIx64 "] failed to schedule", taskp->id);
+		}		
+	}
+
+}
+
+static void
+unschedule_tab(struct tab *tabp)
+{
+	void		*iter;
 	uint64_t	task_id;
 	struct task	*taskp;
 	time_t		now, next;
@@ -714,38 +750,54 @@ schedule_tab(struct tab *tabp)
 	
 	iter = NULL;
 	while (tree_iter(&tabp->tasks, &iter, (uint64_t *)&task_id, (void **)&taskp)) {
-		now = time(NULL);
-		next = next_schedule(now, taskp);
-		ti = localtime(&next);
-		strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H:%M", ti);
-		log_info("[%08x%08x] next: %s, command: %s",
-		    tabp->id, (uint32_t)task_id, buffer, taskp->command);
-
-		// Schedule the task in the run queue
-		if (!runq_schedule_at(runq, next, (void *)taskp)) {
-			log_warn("Failed to schedule task %s", taskp->command);
-		}
+		log_info("[%016" PRIx64 "] canceling", taskp->id);
+		runq_cancel(runq, taskp);
 	}
 
 }
+
 
 static void
 task_execute_callback(struct runq *rq, void *arg)
 {
 	struct task *taskp = (struct task *)arg;
 	time_t		now, next;
+
+	struct tm	*now_ti;
+	char		now_buffer[80];
+
 	struct tm	*ti;
 	char		buffer[80];
 
 	now = time(NULL);
+	now_ti = localtime(&now);
+	strftime(now_buffer, sizeof(now_buffer), "%Y-%m-%d-%H:%M", now_ti);
+	
 	next = next_schedule(now, taskp);
 	ti = localtime(&next);
 	strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H:%M", ti);
-	
-	log_info("executing command: %s, next: %s",
-	    taskp->command, buffer);
 
+
+	m_create(p_parent, IMSG_TASK_CREATE, 0, 0, -1);
+	m_add_id(p_parent, taskp->id);
+	m_add_string(p_parent, taskp->username);
+	m_add_uid(p_parent, taskp->uid);
+	m_add_u8(p_parent, taskp->n_flag);
+	m_add_u8(p_parent, taskp->q_flag);
+	m_add_u8(p_parent, taskp->s_flag);
+	m_add_string(p_parent, taskp->command);
+	m_close(p_parent);
+
+	m_create(p_parent, IMSG_TASK_RUN, 0, 0, -1);
+	m_add_id(p_parent, taskp->id);
+	m_close(p_parent);
+
+	log_info("[%016" PRIx64 "] %s: running command [%s] as user %s (uid=%d)",
+	    taskp->id, now_buffer, taskp->command, taskp->username, taskp->uid);
+	
 	if (!runq_schedule_at(runq, next, (void *)taskp)) {
 		log_warn("Failed to schedule task %s", taskp->command);
 	}
+	log_info("[%016" PRIx64 "] \trescheduling at %s",
+	    taskp->id, buffer);
 }
