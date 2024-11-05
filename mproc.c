@@ -430,6 +430,12 @@ m_add_size(struct mproc *m, size_t sz)
 };
 
 void
+m_add_uid(struct mproc *m, uid_t uid)
+{
+	m_add(m, &uid, sizeof(uid));
+};
+
+void
 m_add_time(struct mproc *m, time_t v)
 {
 	m_add(m, &v, sizeof(v));
@@ -526,6 +532,12 @@ void
 m_get_size(struct msg *m, size_t *sz)
 {
 	m_get(m, sz, sizeof(*sz));
+}
+
+void
+m_get_uid(struct msg *m, uid_t *uid)
+{
+	m_get(m, uid, sizeof(*uid));
 }
 
 void
