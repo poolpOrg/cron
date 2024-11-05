@@ -62,6 +62,25 @@ parent_imsg(struct mproc *p, struct imsg *imsg)
 		fatalx("process %s socket closed", p->name);
 
 	switch (imsg->hdr.type) {
+	case IMSG_NOTIFY_USER_TAB_FAILURE: {
+		const char		*username;
+		const char		*errormsg;
+		struct tab_cache	*tc;
+
+		m_msg(&m, imsg);
+		m_get_string(&m, &username);
+		m_get_string(&m, &errormsg);
+		m_end(&m);
+
+		log_warnx("error installing crontab for %s: %s",
+		    username, errormsg);
+
+		/* invalidate cache to give it another chance at next tick */
+		if ((tc = dict_pop(&tabs_cache, username)) != NULL)
+			free(tc);		
+		break;
+	}
+		
 	case IMSG_TASK_CREATE: {
 		uint64_t	taskid;
 		const char     	*username;

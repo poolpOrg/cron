@@ -56,7 +56,7 @@ static void	planner_shutdown(void);
 static time_t	next_schedule(time_t, struct task *);
 static void	task_execute_callback(struct runq *, void *);
 
-static int	handle_notify_user_tab(int, const char *, uid_t);
+static int	handle_notify_user_tab(int, const char *, uid_t, char **);
 static struct tab *parse_user_tab(FILE *, const char *, uid_t);
 
 void
@@ -73,17 +73,21 @@ planner_imsg(struct mproc *p, struct imsg *imsg)
 		FILE		*fp;
 		const char	*username;
 		uid_t		uid;
+		char		*errormsg;
 
 		m_msg(&m, imsg);
 		m_get_string(&m, &username);
 		m_get_uid(&m, &uid);
 		m_end(&m);
 
-		if (!handle_notify_user_tab(imsg_get_fd(imsg), username, uid)) {
-			log_warn("planner_imsg: could not obtain user tab");
+		
+		if (handle_notify_user_tab(imsg_get_fd(imsg), username, uid, &errormsg))
+			return;
 
-			/* XXX - send imsg to parent to invalidate cache */
-		}
+		m_create(p_parent, IMSG_NOTIFY_USER_TAB_FAILURE, 0, 0, -1);
+		m_add_string(p_parent, username);
+		m_add_string(p_parent, errormsg);
+		m_close(p_parent);
 		break;
 	}
 	default:
@@ -190,17 +194,21 @@ task_execute_callback(struct runq *rq, void *arg)
 }
 
 static int
-handle_notify_user_tab(int fd, const char *username, uid_t uid)
+handle_notify_user_tab(int fd, const char *username, uid_t uid, char **errormsg)
 {
-	FILE		*fp;
-	struct tab	*tabp, *old;
+	FILE		*fp = NULL;
+	struct tab	*tabp = NULL, *old = NULL;
 
 	/* fd exhaustion prevented fd passing */
-	if (fd == -1)
+	if (fd == -1) {
+		*errormsg = "could not obtain file descriptor";
 		goto err;
+	}
 
-	if ((fp = fdopen(fd, "r")) == NULL)
+	if ((fp = fdopen(fd, "r")) == NULL) {
+		*errormsg = strerror(errno);
 		goto err;
+	}
 
 	if ((tabp = tab_parse_user(fp, username, uid)) == NULL)
 		goto err;
@@ -211,6 +219,7 @@ handle_notify_user_tab(int fd, const char *username, uid_t uid)
 		tab_unplan(runq, tabp);
 		tab_cleanup(old);
 		free(old);
+		old = NULL;
 	}
 
 	if (!tab_plan(runq, tabp)) {
@@ -218,6 +227,7 @@ handle_notify_user_tab(int fd, const char *username, uid_t uid)
 		dict_pop(&tabs, username);
 		tab_cleanup(tabp);
 		free(tabp);
+		tabp = NULL;
 		goto err;
 	}
 
@@ -229,5 +239,8 @@ err:
 		close(fd);
 	if (fp != NULL)
 		fclose(fp);
+	if (*errormsg == NULL) {
+		*errormsg = "unknown error";
+	}
 	return 0;
 }
