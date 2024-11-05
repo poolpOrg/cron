@@ -40,6 +40,9 @@ enum cron_proc_type {
 enum imsg_type {
 	IMSG_SETUP_PEER,
 	IMSG_SETUP_DONE,
+
+	IMSG_TASK_CREATE,
+	IMSG_TASK_RUN,
 };
 
 struct tab {
@@ -74,7 +77,8 @@ struct time_field_atom {
 
 
 struct task {
-	uint8_t	run_once;
+	uint64_t	id;
+	uint8_t		run_once;
 
 	struct time_field_head minutes;
 	struct time_field_head hours;
@@ -83,6 +87,7 @@ struct task {
 	struct time_field_head days_of_week;
 
 	char	*username;
+	uid_t	uid;
 
 	uint8_t	n_flag;
 	uint8_t	q_flag;
