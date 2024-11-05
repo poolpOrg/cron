@@ -42,7 +42,6 @@ int	tracing = 0;
 
 struct mproc	*p_parent = NULL;
 struct mproc	*p_control = NULL;
-struct mproc	*p_scheduler = NULL;
 struct mproc	*p_planner = NULL;
 
 void		(*imsg_callback)(struct mproc *, struct imsg *);
@@ -53,7 +52,6 @@ static int	opt_foreground_log;
 
 int	parent(void);
 int	parser(void);
-int	scheduler(void);
 
 static void
 usage(void)
@@ -121,25 +119,12 @@ main(int argc, char *argv[])
 				fatal("failed to daemonize");
 
 		/* setup all processes */
-		p_scheduler = start_child(save_argc, save_argv, "scheduler");
-		p_scheduler->proc = PROC_SCHEDULER;
-
 		p_planner = start_child(save_argc, save_argv, "planner");
 		p_planner->proc = PROC_PLANNER;
 
-		setup_peers(p_scheduler, p_planner);
-
-		setup_done(p_scheduler);
 		setup_done(p_planner);
 
 		return parent();
-	}
-
-	if (!strcmp(rexec, "scheduler")) {
-		cron_process = PROC_SCHEDULER;
-		setup_proc();
-
-		return scheduler();
 	}
 
 	if (!strcmp(rexec, "planner")) {
@@ -160,8 +145,6 @@ proc_title(enum cron_proc_type proc)
 		return "[priv]";
 	case PROC_CONTROL:
 		return "control";
-	case PROC_SCHEDULER:
-		return "scheduler";
 	case PROC_PLANNER:
 		return "planner";
 	case PROC_CLIENT:
@@ -178,8 +161,6 @@ proc_name(enum cron_proc_type proc)
 		return "parent";
 	case PROC_CONTROL:
 		return "control";
-	case PROC_SCHEDULER:
-		return "scheduler";
 	case PROC_PLANNER:
 		return "planner";
  	case PROC_CLIENT:

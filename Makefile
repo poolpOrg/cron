@@ -12,7 +12,6 @@ SRCS=	cron.c		\
 	parent.c	\
 	planner.c	\
 	runq.c		\
-	scheduler.c	\
 	setup.c		\
 	tab.c		\
 	task.c		\

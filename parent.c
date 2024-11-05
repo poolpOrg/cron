@@ -63,7 +63,6 @@ parent()
 
 	event_init();
 
-	config_peer(PROC_SCHEDULER);
 	config_peer(PROC_PLANNER);
 	
 	if (pledge("stdio", NULL) == -1)

@@ -53,10 +53,6 @@ static void	planner_reset_events(void);
 static void	planner_timeout(int, short, void *);
 static void	planner_shutdown(void);
 
-
-static void	notify_new_tab(struct tab *);
-static void	notify_remove_tab(struct tab *);
-
 void
 planner_imsg(struct mproc *p, struct imsg *imsg)
 {
@@ -109,7 +105,6 @@ planner(void)
 	signal(SIGHUP, SIG_IGN);
 
 	config_peer(PROC_PARENT);
-	config_peer(PROC_SCHEDULER);
 	
 	if (pledge("stdio rpath", NULL) == -1)
 		fatal("pledge");
@@ -219,9 +214,7 @@ planner_process_tab(char *pathname)
 	} else {
 		old = dict_get(&tabs, pathname);
 		dict_set(&tabs, pathname, c);
-		notify_new_tab(c);
 		if (old != NULL) {
-			notify_remove_tab(old);
 			tab_cleanup(old);
 			free(old);
 		}
@@ -637,132 +630,4 @@ err:
 	tab_cleanup(tab);
 	free(tab);
 	return NULL;
-}
-
-
-static void
-notify_new_tab(struct tab *tabp)
-{
-	void *iter;
-	const char *env_key;
-	const char *env_value;
-	uint64_t	task_id;
-	struct task	*taskp;
-	struct time_field_atom	*np;
-	
-	m_create(p_scheduler, IMSG_TAB_BEGIN, 0, 0, -1);
-	m_add_u32(p_scheduler, tabp->id);
-	m_close(p_scheduler);
-
-	iter = NULL;
-	while (dict_iter(&tabp->env, &iter, (const char **)&env_key, (void **)&env_value)) {
-		m_create(p_scheduler, IMSG_TAB_ENV, 0, 0, -1);
-		m_add_u32(p_scheduler, tabp->id);
-		m_add_string(p_scheduler, env_key);
-		m_add_string(p_scheduler, env_value);
-		m_close(p_scheduler);
-	}
-
-	iter = NULL;
-	while (dict_iter(&tabp->env, &iter, (const char **)&env_key, (void **)&env_value)) {
-		m_create(p_scheduler, IMSG_TAB_ENV, 0, 0, -1);
-		m_add_u32(p_scheduler, tabp->id);
-		m_add_string(p_scheduler, env_key);
-		m_add_string(p_scheduler, env_value);
-		m_close(p_scheduler);
-	}
-
-
-	iter = NULL;
-	while (tree_iter(&tabp->tasks, &iter, (uint64_t *)&task_id, (void *)&taskp)) {
-		m_create(p_scheduler, IMSG_TAB_TASK_BEGIN, 0, 0, -1);
-		m_add_u32(p_scheduler, tabp->id);
-		m_add_u32(p_scheduler, (uint32_t)task_id);
-		m_add_u8(p_scheduler, taskp->run_once);
-		m_add_string(p_scheduler, taskp->username);
-		m_add_u8(p_scheduler, taskp->n_flag);
-		m_add_u8(p_scheduler, taskp->q_flag);
-		m_add_u8(p_scheduler, taskp->s_flag);
-		m_add_string(p_scheduler, taskp->command);
-		m_close(p_scheduler);
-
-		for (np = SLIST_FIRST(&taskp->minutes); np != NULL; np = SLIST_NEXT(np, entries)) {
-			m_create(p_scheduler, IMSG_TAB_TASK_ADD_TIMEFIELD, 0, 0, -1);
-			m_add_u32(p_scheduler, tabp->id);
-			m_add_u32(p_scheduler, (uint32_t)task_id);
-			m_add_u8(p_scheduler, (uint8_t)TFA_MINUTE);
-			m_add_u8(p_scheduler, np->step);
-			m_add_u8(p_scheduler, np->rndval);
-			m_add_u8(p_scheduler, np->minval);
-			m_add_u8(p_scheduler, np->maxval);
-			m_close(p_scheduler);
-		}
-
-		for (np = SLIST_FIRST(&taskp->hours); np != NULL; np = SLIST_NEXT(np, entries)) {
-			m_create(p_scheduler, IMSG_TAB_TASK_ADD_TIMEFIELD, 0, 0, -1);
-			m_add_u32(p_scheduler, tabp->id);
-			m_add_u32(p_scheduler, (uint32_t)task_id);
-			m_add_u8(p_scheduler, (uint8_t)TFA_HOUR);
-			m_add_u8(p_scheduler, np->step);
-			m_add_u8(p_scheduler, np->rndval);
-			m_add_u8(p_scheduler, np->minval);
-			m_add_u8(p_scheduler, np->maxval);
-			m_close(p_scheduler);
-		}
-
-		for (np = SLIST_FIRST(&taskp->days_of_month); np != NULL; np = SLIST_NEXT(np, entries)) {
-			m_create(p_scheduler, IMSG_TAB_TASK_ADD_TIMEFIELD, 0, 0, -1);
-			m_add_u32(p_scheduler, tabp->id);
-			m_add_u32(p_scheduler, (uint32_t)task_id);
-			m_add_u8(p_scheduler, (uint8_t)TFA_DAY_OF_MONTH);
-			m_add_u8(p_scheduler, np->step);
-			m_add_u8(p_scheduler, np->rndval);
-			m_add_u8(p_scheduler, np->minval);
-			m_add_u8(p_scheduler, np->maxval);
-			m_close(p_scheduler);
-		}
-
-		for (np = SLIST_FIRST(&taskp->months); np != NULL; np = SLIST_NEXT(np, entries)) {
-			m_create(p_scheduler, IMSG_TAB_TASK_ADD_TIMEFIELD, 0, 0, -1);
-			m_add_u32(p_scheduler, tabp->id);
-			m_add_u32(p_scheduler, (uint32_t)task_id);
-			m_add_u8(p_scheduler, (uint8_t)TFA_MONTH);
-			m_add_u8(p_scheduler, np->step);
-			m_add_u8(p_scheduler, np->rndval);
-			m_add_u8(p_scheduler, np->minval);
-			m_add_u8(p_scheduler, np->maxval);
-			m_close(p_scheduler);
-		}
-
-		for (np = SLIST_FIRST(&taskp->days_of_week); np != NULL; np = SLIST_NEXT(np, entries)) {
-			m_create(p_scheduler, IMSG_TAB_TASK_ADD_TIMEFIELD, 0, 0, -1);
-			m_add_u32(p_scheduler, tabp->id);
-			m_add_u32(p_scheduler, (uint32_t)task_id);
-			m_add_u8(p_scheduler, (uint8_t)TFA_DAY_OF_WEEK);
-			m_add_u8(p_scheduler, np->step);
-			m_add_u8(p_scheduler, np->rndval);
-			m_add_u8(p_scheduler, np->minval);
-			m_add_u8(p_scheduler, np->maxval);
-			m_close(p_scheduler);
-		}
-
-		m_create(p_scheduler, IMSG_TAB_TASK_COMMIT, 0, 0, -1);
-		m_add_u32(p_scheduler, tabp->id);
-		m_add_u32(p_scheduler, (uint32_t)task_id);
-		m_close(p_scheduler);
-	}
-
-	m_create(p_scheduler, IMSG_TAB_COMMIT, 0, 0, -1);
-	m_add_u32(p_scheduler, tabp->id);
-	m_close(p_scheduler);
-
-}
-
-
-static void
-notify_remove_tab(struct tab *tabp)
-{
-	m_create(p_scheduler, IMSG_TAB_REMOVE, 0, 0, -1);
-	m_add_u32(p_scheduler, tabp->id);
-	m_close(p_scheduler);
 }

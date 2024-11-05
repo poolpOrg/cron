@@ -56,8 +56,6 @@ config_peer(enum cron_proc_type proc)
 		p = p_control;
 	else if (proc == PROC_PARENT)
 		p = p_parent;
-	else if (proc == PROC_SCHEDULER)
-		p = p_scheduler;
 	else if (proc == PROC_PLANNER)
 		p = p_planner;
 	else

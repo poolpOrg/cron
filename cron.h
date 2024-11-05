@@ -32,7 +32,6 @@ struct cron {
 enum cron_proc_type {
 	PROC_PARENT,
 	PROC_CONTROL,
-	PROC_SCHEDULER,
 	PROC_PLANNER,
 	PROC_CLIENT,	// control session
 };
@@ -41,15 +40,6 @@ enum cron_proc_type {
 enum imsg_type {
 	IMSG_SETUP_PEER,
 	IMSG_SETUP_DONE,
-
-	IMSG_TAB_BEGIN,
-	IMSG_TAB_ENV,
-	IMSG_TAB_COMMIT,
-	IMSG_TAB_REMOVE,
-
-	IMSG_TAB_TASK_BEGIN,
-	IMSG_TAB_TASK_ADD_TIMEFIELD,
-	IMSG_TAB_TASK_COMMIT,
 };
 
 struct tab {
@@ -106,7 +96,6 @@ extern enum cron_proc_type	cron_process;
 
 extern struct mproc *p_control;
 extern struct mproc *p_parent;
-extern struct mproc *p_scheduler;
 extern struct mproc *p_planner;
 
 extern int tracing;
@@ -121,7 +110,6 @@ extern void (*imsg_callback)(struct mproc *, struct imsg *);
 
 int	parent(void);
 int	control(void);
-int	scheduler(void);
 int	planner(void);
 
 

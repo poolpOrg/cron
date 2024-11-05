@@ -205,9 +205,6 @@ setup_peer(enum cron_proc_type proc, pid_t pid, int sock)
 	case PROC_CONTROL:
 		pp = &p_control;
 		break;
-	case PROC_SCHEDULER:
-		pp = &p_scheduler;
-		break;
 	case PROC_PLANNER:
 		pp = &p_planner;
 		break;
