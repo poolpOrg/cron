@@ -41,6 +41,9 @@
 #include "log.h"
 
 
+static int	match_time_field(struct time_field_head *, int);
+
+
 void
 task_init(struct task *taskp)
 {
@@ -90,3 +93,62 @@ task_cleanup(struct task *taskp)
 	free(taskp->username);
 	free(taskp->command);
 }
+
+time_t
+task_next_schedule(struct task *taskp, time_t now)
+{
+	struct tm	*next;
+
+	next = localtime(&now);
+	next->tm_sec = 0;
+	next->tm_min++;
+	if (next->tm_min >= 60) {
+		next->tm_min = 0;
+		next->tm_hour++;
+	}
+	if (next->tm_hour >= 24) {
+		next->tm_hour = 0;
+		next->tm_mday++;
+	}
+	
+	/* normalize month and day */
+	mktime(next);
+
+	while (1) {
+		if (match_time_field(&taskp->minutes, next->tm_min) &&
+		    match_time_field(&taskp->hours, next->tm_hour) &&
+		    match_time_field(&taskp->days_of_month, next->tm_mday) &&
+		    match_time_field(&taskp->months, next->tm_mon+1) &&
+		    match_time_field(&taskp->days_of_week, next->tm_wday))
+			return mktime(next);
+
+		/* increase by a minute */
+		next->tm_min++;
+		if (next->tm_min >= 60) {
+			next->tm_min = 0;
+			next->tm_hour++;
+		}
+		if (next->tm_hour >= 24) {
+			next->tm_hour = 0;
+			next->tm_mday++;
+		}
+
+		/* normalize month and day */
+		mktime(next);
+	}
+}
+
+static int
+match_time_field(struct time_field_head *head, int value)
+{
+	struct time_field_atom *atom;
+	uint8_t v;
+
+	SLIST_FOREACH(atom, head, entries) {
+		for (v = atom->minval; v <= atom->maxval; v += atom->step)
+			if (v == value)
+				return 1;
+	}
+	return 0;
+}
+

@@ -41,6 +41,8 @@ enum imsg_type {
 	IMSG_SETUP_PEER,
 	IMSG_SETUP_DONE,
 
+	IMSG_NOTIFY_USER_TAB,
+
 	IMSG_TASK_CREATE,
 	IMSG_TASK_RUN,
 };
@@ -141,12 +143,16 @@ void log_trace0(const char *, ...);
 /* setup.c */
 void	setup_peers(struct mproc *, struct mproc *);
 
+
 /* tab.c */
 void	tab_init(struct tab *);
 void	tab_cleanup(struct tab *);
+int	tab_plan(struct runq *, struct tab *);
+void	tab_unplan(struct runq *, struct tab *);
+struct tab	*tab_parse_user(FILE *, const char *, uid_t);
 
 
 /* task.c */
 void	task_init(struct task *);
 void	task_cleanup(struct task *);
-
+time_t	task_next_schedule(struct task *, time_t);
