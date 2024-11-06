@@ -45,6 +45,7 @@ enum imsg_type {
 	IMSG_NOTIFY_USER_TAB_FAILURE,
 
 	IMSG_TASK_CREATE,
+	IMSG_TASK_SETENV,
 	IMSG_TASK_RUN,
 };
 
@@ -80,8 +81,12 @@ struct time_field_atom {
 
 
 struct task {
+	struct tab	*tabp;
+
 	uint64_t	id;
 	uint8_t		run_once;
+
+	struct dict	env;
 
 	struct time_field_head minutes;
 	struct time_field_head hours;

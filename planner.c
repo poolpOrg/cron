@@ -80,7 +80,6 @@ planner_imsg(struct mproc *p, struct imsg *imsg)
 		m_get_uid(&m, &uid);
 		m_end(&m);
 
-		
 		if (handle_notify_user_tab(imsg_get_fd(imsg), username, uid, &errormsg))
 			return;
 
@@ -151,7 +150,7 @@ planner(void)
 static void
 task_execute_callback(struct runq *rq, void *arg)
 {
-	struct task *taskp = (struct task *)arg;
+	struct task	*taskp = (struct task *)arg;
 	time_t		now, next;
 
 	struct tm	*now_ti;
@@ -160,6 +159,13 @@ task_execute_callback(struct runq *rq, void *arg)
 	struct tm	*ti;
 	char		buffer[80];
 
+	void		*iter;
+	const char	*key;
+	const char	*value;
+
+	uint32_t	*tab_id;
+	struct tab	*tabp;
+	
 	now = time(NULL);
 	now_ti = localtime(&now);
 	strftime(now_buffer, sizeof(now_buffer), "%Y-%m-%d-%H:%M", now_ti);
@@ -178,6 +184,17 @@ task_execute_callback(struct runq *rq, void *arg)
 	m_add_u8(p_parent, taskp->s_flag);
 	m_add_string(p_parent, taskp->command);
 	m_close(p_parent);
+
+	tabp = taskp->tabp;
+
+	iter = NULL;
+	while (dict_iter(&tabp->env, &iter, &key, (void **)&value)) {
+		m_create(p_parent, IMSG_TASK_SETENV, 0, 0, -1);
+		m_add_id(p_parent, taskp->id);
+		m_add_string(p_parent, key);
+		m_add_string(p_parent, value);
+		m_close(p_parent);
+	}
 
 	m_create(p_parent, IMSG_TASK_RUN, 0, 0, -1);
 	m_add_id(p_parent, taskp->id);

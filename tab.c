@@ -228,6 +228,7 @@ parse_user_tab_task_entry(struct tab *tabp, const char *username, uid_t uid, cha
 	if ((taskp = calloc(1, sizeof *taskp)) == NULL)
 		return 0;
 	task_init(taskp);
+	taskp->tabp = tabp;
 
 	/* check optional flags*/
 	if (*line == '-') {

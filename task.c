@@ -48,6 +48,7 @@ void
 task_init(struct task *taskp)
 {
 	memset(taskp, 0, sizeof *taskp);
+	dict_init(&taskp->env);
 	SLIST_INIT(&taskp->minutes);
 	SLIST_INIT(&taskp->hours);
 	SLIST_INIT(&taskp->days_of_month);
@@ -59,6 +60,11 @@ void
 task_cleanup(struct task *taskp)
 {
 	struct time_field_atom	*tfap;
+	void *data;
+
+	while (dict_poproot(&taskp->env, &data)) {
+		free(data);
+	}
 
 	while (!SLIST_EMPTY(&taskp->minutes)) {
 		tfap = SLIST_FIRST(&taskp->minutes);

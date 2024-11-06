@@ -28,6 +28,7 @@
 #include <fts.h>
 #include <imsg.h>
 #include <inttypes.h>
+#include <paths.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,7 @@ static struct tree	tasks;
 static struct event	ev;
 
 static int	run_task(struct task *);
+static int	run_command(const char *);
 
 static void	reset_events(void);
 static void	watcher_timeout(int, short, void *);
@@ -120,6 +122,26 @@ parent_imsg(struct mproc *p, struct imsg *imsg)
 		break;
 	}
 
+	case IMSG_TASK_SETENV: {
+		uint64_t	taskid;
+		const char	*key;
+		const char	*value, *valuecp;
+		
+		m_msg(&m, imsg);
+		m_get_id(&m, &taskid);
+		m_get_string(&m, &key);
+		m_get_string(&m, &value);
+		m_end(&m);
+
+		taskp = tree_xget(&tasks, taskid);
+
+		if ((valuecp = strdup(value)) == NULL)
+			fatal("strdup");
+		log_debug("SETENV %s = %s", key, valuecp);
+		dict_set(&taskp->env, key, (void *)valuecp);
+		break;
+	}
+
 	case IMSG_TASK_RUN: {
 		uint64_t	taskid;
 
@@ -127,7 +149,13 @@ parent_imsg(struct mproc *p, struct imsg *imsg)
 		m_get_id(&m, &taskid);
 		m_end(&m);
 
-		run_task(tree_xpop(&tasks, taskid));
+		taskp = tree_xpop(&tasks, taskid);
+
+		run_task(taskp);
+
+		task_cleanup(taskp);
+		free(taskp);
+
 		break;
 	}
 
@@ -175,15 +203,21 @@ static int
 run_task(struct task *taskp)
 {
 	pid_t	pid;
-	char	*shell;
 	struct passwd	*pw;
-
+	void	*iter;
+	const char	*key;
+	const char	*value;
+	char		**envp;
+	extern char **environ;
+	
 	log_info("RUNNING TASK FOR %s (uid=%d) REQUEST FOR %016"PRIx64, taskp->username, taskp->uid, taskp->id);	
 
 	if ((pw = getpwnam(taskp->username)) == NULL) {
+		log_info("getpnam failed");
 		return 0;
 	}
 	if (pw->pw_uid != taskp->uid) {
+		log_info("uid mismatch: %d <> %d", pw->pw_uid, taskp->uid);
 		return 0;
 	}
 	log_info("uid: %d, gid: %d", pw->pw_uid, pw->pw_gid);
@@ -193,6 +227,8 @@ run_task(struct task *taskp)
 		return 0;
 
 	if (pid > 0) {
+
+		
 		// parent process
 		return 1;
 	}
@@ -204,7 +240,24 @@ run_task(struct task *taskp)
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("run_task: cannot drop privileges");
 
-	/* XXX - SET ENV */
+	/* set environment */
+	environ = NULL;
+	setenv("LOGNAME", pw->pw_name, 1);
+	setenv("HOME", pw->pw_dir, 1);
+	setenv("PWD", pw->pw_dir, 1);
+	setenv("PATH", _PATH_DEFPATH, 1);
+	setenv("SHELL", "/bin/sh", 1);
+	setenv("USER", pw->pw_name, 1);
+
+	iter = NULL;
+	while (dict_iter(&taskp->env, &iter, &key, (void **)&value)) {
+		if (!strcmp("LOGNAME", key))
+			continue;
+		if (!strcmp("USER", key))
+			continue;
+		setenv(key, value, 1);
+	}
+
 	_exit(run_command(taskp->command));
 }
 
@@ -290,12 +343,15 @@ watcher_handle_user_tab(const char *pathname, const char *username, struct stat 
 		return;
 	}
 
+	
 	/* hand over tab to planner for parsing and scheduling */
 	m_create(p_planner, IMSG_NOTIFY_USER_TAB, 0, 0, fd);
 	m_add_string(p_planner, username);
-	m_add_uid(p_planner, st->st_size);
+	m_add_uid(p_planner, st->st_uid);
 	m_close(p_planner);
 
+
+	/* update cache, will be invalidated if IMSG_NOTIFY_USER_TAB fails */
 	if (cc == NULL)
 		if ((cc = calloc(1, sizeof *cc)) == NULL) {
 			log_warn("cannot allocate tab cache entry");
