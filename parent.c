@@ -137,7 +137,7 @@ parent_imsg(struct mproc *p, struct imsg *imsg)
 
 		if ((valuecp = strdup(value)) == NULL)
 			fatal("strdup");
-		log_debug("SETENV %s = %s", key, valuecp);
+
 		dict_set(&taskp->env, key, (void *)valuecp);
 		break;
 	}
